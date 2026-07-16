@@ -42,9 +42,9 @@ function sessionDisplayName(session) {
   const localPart = email.split('@')[0]
   return localPart || 'player'
 }
-
 function graphToSvg(graph, label) {
   const count = graph.length
+  const safeLabel = escapeHtml(label)
   const points = Array.from({ length: count }, (_, index) => {
     const angle = (2 * Math.PI * index) / count - Math.PI / 2
     return {
@@ -73,8 +73,8 @@ function graphToSvg(graph, label) {
   )
 
   return `<figure class="graph-card">
-    <figcaption>${label}</figcaption>
-    <svg viewBox="0 0 160 160" role="img" aria-label="${label}">
+    <figcaption>${safeLabel}</figcaption>
+    <svg viewBox="0 0 160 160" role="img" aria-label="${safeLabel}">
       ${edges.join('')}
       ${nodes.join('')}
     </svg>
@@ -238,7 +238,7 @@ function leaderboardHtml() {
   const items = state.leaderboard
     .map(
       (entry, index) =>
-        `<li><span>#${index + 1} ${entry.display_name ?? 'player'}</span><strong>${entry.score}</strong></li>`,
+        `<li><span>#${index + 1} ${escapeHtml(entry.display_name ?? 'player')}</span><strong>${entry.score}</strong></li>`,
     )
     .join('')
   return `<ol class="leaderboard">${items}</ol>`
