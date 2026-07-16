@@ -23,6 +23,10 @@ VITE_SUPABASE_URL=your-project-url
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
+The app uses Supabase email/password authentication. Registration stores the player's username in user metadata and sends a confirmation message when **Confirm email** is enabled under **Authentication > Providers > Email**.
+
+Supabase's built-in email sender is intended for light development use and has a low delivery quota. If it reports `email rate limit exceeded`, wait for the quota window to reset before trying again. For reliable production delivery, configure a custom SMTP provider under the project's authentication settings, then review **Authentication > Rate Limits**. Alternatively, disable **Confirm email** during local development if confirmation is not needed.
+
 Create this table in Supabase SQL editor:
 
 ```sql

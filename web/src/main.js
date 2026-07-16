@@ -1,14 +1,16 @@
 import { createClient } from '@supabase/supabase-js'
 import './style.css'
 import { ROUND_COUNT, createRound, scoreForElapsedMs } from './gameLogic'
+import { topUniqueScores } from './leaderboard'
 
 const app = document.querySelector('#app')
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 const state = {
-  email: '',
-  password: '',
+  screen: 'home',
+  authMode: null,
+  authPending: false,
   statusMessage: '',
   currentRound: createRound(),
   roundStartedAt: Date.now(),
@@ -22,6 +24,24 @@ const state = {
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function sessionDisplayName(session) {
+  const username = session?.user?.user_metadata?.username
+  if (username) return username
+
+  const email = session?.user?.email ?? ''
+  const localPart = email.split('@')[0]
+  return localPart || 'player'
+}
 
 function graphToSvg(graph, label) {
   const count = graph.length
@@ -63,25 +83,38 @@ function graphToSvg(graph, label) {
 
 async function loadLeaderboard() {
   if (!supabase) return
-  const { data, error } = await supabase
-    .from('scores')
-    .select('display_name, score')
-    .order('score', { ascending: false })
-    .limit(10)
+  const pageSize = 100
+  const scores = []
+  let offset = 0
 
-  if (error) {
-    state.statusMessage = `Leaderboard unavailable: ${error.message}`
-    return
+  while (true) {
+    const { data, error } = await supabase
+      .from('scores')
+      .select('user_id, display_name, score')
+      .order('score', { ascending: false })
+      .range(offset, offset + pageSize - 1)
+
+    if (error) {
+      state.statusMessage = `Leaderboard unavailable: ${error.message}`
+      return
+    }
+
+    scores.push(...data)
+    const leaders = topUniqueScores(scores)
+    if (leaders.length === 10 || data.length < pageSize) {
+      state.leaderboard = leaders
+      return
+    }
+
+    offset += pageSize
   }
-
-  state.leaderboard = data
 }
 
 async function saveScore() {
   if (!supabase || !state.session) return
   const { error } = await supabase.from('scores').insert({
     user_id: state.session.user.id,
-    display_name: state.session.user.email ?? 'player',
+    display_name: sessionDisplayName(state.session),
     score: state.totalScore,
   })
 
@@ -101,6 +134,19 @@ function startGame() {
   state.roundStartedAt = Date.now()
   state.gameFinished = false
   state.lastAnswerSummary = ''
+}
+
+function openGame() {
+  startGame()
+  state.screen = 'game'
+  state.statusMessage = ''
+  render()
+}
+
+function returnHome() {
+  state.screen = 'home'
+  state.statusMessage = ''
+  render()
 }
 
 async function handleAnswer(guessIsomorphic) {
@@ -124,26 +170,54 @@ async function handleAnswer(guessIsomorphic) {
   render()
 }
 
-async function handleAuthSubmit(mode, event) {
+async function handleAuthSubmit(event) {
   event.preventDefault()
   if (!supabase) {
-    state.statusMessage = 'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable login.'
+    state.statusMessage = 'Account access is not configured yet.'
+    state.authMode = null
     render()
     return
   }
 
-  if (mode === 'signup') {
-    const { error } = await supabase.auth.signUp({
-      email: state.email,
-      password: state.password,
-    })
-    state.statusMessage = error ? error.message : 'Sign-up successful. Check your inbox if email confirmation is on.'
+  const formData = new FormData(event.currentTarget)
+  const username = String(formData.get('username') ?? '').trim()
+  const email = String(formData.get('email') ?? '').trim().toLowerCase()
+  const password = String(formData.get('password') ?? '')
+
+  if (!email || (state.authMode === 'signup' && !username)) {
+    state.statusMessage = 'Complete all fields to continue.'
+    render()
+    return
+  }
+
+  state.authPending = true
+  state.statusMessage = ''
+  const submitButton = event.submitter
+  submitButton.disabled = true
+  submitButton.textContent = 'Please wait...'
+
+  const result =
+    state.authMode === 'signup'
+      ? await supabase.auth.signUp({
+          email,
+          password,
+          options: { data: { username } },
+        })
+      : await supabase.auth.signInWithPassword({ email, password })
+
+  state.authPending = false
+
+  if (result.error) {
+    state.statusMessage = result.error.message.toLowerCase().includes('email rate limit')
+      ? 'Too many confirmation emails were requested. Wait before retrying or configure custom SMTP in Supabase.'
+      : result.error.message
+  } else if (result.data.session) {
+    state.session = result.data.session
+    state.statusMessage = state.authMode === 'signup' ? 'Account created.' : 'Signed in.'
+    state.authMode = null
   } else {
-    const { error } = await supabase.auth.signInWithPassword({
-      email: state.email,
-      password: state.password,
-    })
-    state.statusMessage = error ? error.message : 'Logged in.'
+    state.statusMessage = 'Account created. Check your email to confirm it, then sign in.'
+    state.authMode = null
   }
 
   render()
@@ -152,7 +226,7 @@ async function handleAuthSubmit(mode, event) {
 async function handleLogout() {
   if (!supabase) return
   await supabase.auth.signOut()
-  state.statusMessage = 'Logged out.'
+  state.statusMessage = 'Signed out.'
   render()
 }
 
@@ -170,75 +244,161 @@ function leaderboardHtml() {
   return `<ol class="leaderboard">${items}</ol>`
 }
 
-function render() {
-  app.innerHTML = `
-    <main>
-      <h1>Graph Isomorphism Challenge</h1>
-      <p class="muted">Answer 10 rounds. Correct answers score higher when answered faster.</p>
+function accountActionsHtml() {
+  if (state.session) {
+    return `<div class="account-menu">
+      <span class="account-name">${escapeHtml(sessionDisplayName(state.session))}</span>
+      <button id="logout" class="text-button" type="button">Sign out</button>
+    </div>`
+  }
+
+  return `<div class="account-menu">
+    <button class="text-button" data-auth-mode="signin" type="button">Sign in</button>
+    <button class="primary-button" data-auth-mode="signup" type="button">Create account</button>
+  </div>`
+}
+
+function authDialogHtml() {
+  if (!state.authMode) return ''
+
+  const isSignup = state.authMode === 'signup'
+  return `<dialog id="auth-dialog" aria-labelledby="auth-title">
+    <div class="dialog-head">
+      <h2 id="auth-title">${isSignup ? 'Create account' : 'Sign in'}</h2>
+      <button id="close-auth" class="icon-button" type="button" aria-label="Close">&times;</button>
+    </div>
+    <form id="auth-form" class="auth-form">
       ${
-        supabase
-          ? `<section class="panel">
-              <h2>Account</h2>
-              ${
-                state.session
-                  ? `<p>Signed in as <strong>${state.session.user.email ?? 'player'}</strong></p>
-                     <button id="logout" type="button">Log out</button>`
-                  : `<form id="auth-form">
-                      <label>Email <input id="email" type="email" required value="${state.email}" /></label>
-                      <label>Password <input id="password" type="password" minlength="6" required value="${state.password}" /></label>
-                      <div class="actions">
-                        <button id="signup" type="submit" data-mode="signup">Sign up</button>
-                        <button id="login" type="submit" data-mode="login">Log in</button>
-                      </div>
-                    </form>`
-              }
-            </section>`
-          : '<p class="warning">Supabase is not configured. You can still play, but auth and leaderboard are disabled.</p>'
+        isSignup
+          ? `<label>
+              Username
+              <input name="username" type="text" autocomplete="username" required autofocus />
+            </label>`
+          : ''
       }
+      <label>
+        Email
+        <input name="email" type="email" autocomplete="email" required ${isSignup ? '' : 'autofocus'} />
+      </label>
+      <label>
+        Password
+        <input name="password" type="password" autocomplete="${isSignup ? 'new-password' : 'current-password'}" minlength="6" required />
+      </label>
+      <button class="primary-button submit-button" type="submit" ${state.authPending ? 'disabled' : ''}>
+        ${state.authPending ? 'Please wait...' : isSignup ? 'Create account' : 'Sign in'}
+      </button>
+    </form>
+    <p class="dialog-status" role="status">${escapeHtml(state.statusMessage)}</p>
+  </dialog>`
+}
+
+function homeScreenHtml() {
+  return `
+    <main class="page shell">
+      <header class="site-header">
+        <a class="wordmark" href="#" aria-label="Game Suite home">Game Suite</a>
+        ${accountActionsHtml()}
+      </header>
+
+      <section class="game-list" aria-labelledby="games-title">
+        <h1 id="games-title">Games</h1>
+        <button id="open-graph-game" class="game-widget" type="button">
+          <h2>Graph Isomorphism</h2>
+          <span class="widget-cta" aria-hidden="true">&rarr;</span>
+        </button>
+      </section>
+
+      <p class="status" role="status">${escapeHtml(state.statusMessage)}</p>
+      ${authDialogHtml()}
+    </main>
+  `
+}
+
+function gameScreenHtml() {
+  return `
+    <main class="page shell">
+      <header class="site-header">
+        <button id="back-home" class="wordmark wordmark-button" type="button">Game Suite</button>
+        ${accountActionsHtml()}
+      </header>
+
+      <section class="game-intro">
+        <h1>Graph Isomorphism</h1>
+      </section>
+
       <section class="panel">
-        <h2>Round ${state.roundNumber}/${ROUND_COUNT}</h2>
-        <p>Score: <strong>${state.totalScore}</strong></p>
+        <div class="panel-head">
+          <h2>Round ${state.roundNumber}/${ROUND_COUNT}</h2>
+          <div class="score-pill">Score ${state.totalScore}</div>
+        </div>
+
         ${
           state.gameFinished
             ? `<p class="result">Game over! Final score: ${state.totalScore}</p>
-               <button id="restart" type="button">Play again</button>`
+               <div class="actions">
+                 <button id="restart" type="button">Play again</button>
+               </div>`
             : `<div class="graphs">
                 ${graphToSvg(state.currentRound.left, 'Graph A')}
                 ${graphToSvg(state.currentRound.right, 'Graph B')}
               </div>
               <div class="actions">
-                <button id="isomorphic" type="button">Isomorphic</button>
-                <button id="not-isomorphic" type="button">Not isomorphic</button>
+                <button id="isomorphic" class="answer-button" type="button" aria-keyshortcuts="1">
+                  <span>Isomorphic</span><kbd>1</kbd>
+                </button>
+                <button id="not-isomorphic" class="answer-button" type="button" aria-keyshortcuts="2">
+                  <span>Not isomorphic</span><kbd>2</kbd>
+                </button>
               </div>`
         }
-        <p class="result">${state.lastAnswerSummary}</p>
+
+        <p class="result">${escapeHtml(state.lastAnswerSummary)}</p>
       </section>
+
       <section class="panel">
-        <h2>Top 10 leaderboard</h2>
+        <div class="panel-head">
+          <h2>Leaderboard</h2>
+        </div>
         ${leaderboardHtml()}
       </section>
-      <p class="status">${state.statusMessage}</p>
+
+      <p class="status" role="status">${escapeHtml(state.statusMessage)}</p>
+      ${authDialogHtml()}
     </main>
   `
+}
+
+function render() {
+  app.innerHTML = state.screen === 'home' ? homeScreenHtml() : gameScreenHtml()
+
+  document.querySelector('#open-graph-game')?.addEventListener('click', openGame)
+  document.querySelector('#back-home')?.addEventListener('click', returnHome)
+  document.querySelectorAll('[data-auth-mode]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.authMode = button.dataset.authMode
+      state.statusMessage = ''
+      render()
+    })
+  })
+  document.querySelector('#close-auth')?.addEventListener('click', () => {
+    state.authMode = null
+    state.statusMessage = ''
+    render()
+  })
 
   const authForm = document.querySelector('#auth-form')
   if (authForm) {
-    authForm.addEventListener('submit', async (event) => {
-      const submitter = event.submitter
-      if (!submitter) return
-      await handleAuthSubmit(submitter.dataset.mode, event)
-    })
-
-    const emailInput = document.querySelector('#email')
-    emailInput?.addEventListener('input', (event) => {
-      state.email = event.target.value
-    })
-
-    const passwordInput = document.querySelector('#password')
-    passwordInput?.addEventListener('input', (event) => {
-      state.password = event.target.value
-    })
+    authForm.addEventListener('submit', handleAuthSubmit)
   }
+
+  const authDialog = document.querySelector('#auth-dialog')
+  authDialog?.addEventListener('cancel', (event) => {
+    event.preventDefault()
+    state.authMode = null
+    state.statusMessage = ''
+    render()
+  })
+  authDialog?.showModal()
 
   document.querySelector('#logout')?.addEventListener('click', handleLogout)
   document.querySelector('#restart')?.addEventListener('click', () => {
@@ -249,7 +409,21 @@ function render() {
   document.querySelector('#not-isomorphic')?.addEventListener('click', () => handleAnswer(false))
 }
 
+function handleGameShortcut(event) {
+  const isTyping = event.target.closest?.('input, textarea, select, [contenteditable="true"]')
+  if (state.screen !== 'game' || state.gameFinished || state.authMode || event.repeat || isTyping) {
+    return
+  }
+
+  if (event.key === '1' || event.key === '2') {
+    event.preventDefault()
+    handleAnswer(event.key === '1')
+  }
+}
+
 async function init() {
+  document.addEventListener('keydown', handleGameShortcut)
+
   if (supabase) {
     const {
       data: { session },
