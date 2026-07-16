@@ -23,8 +23,18 @@ const state = {
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function graphToSvg(graph, label) {
   const count = graph.length
+  const safeLabel = escapeHtml(label)
   const points = Array.from({ length: count }, (_, index) => {
     const angle = (2 * Math.PI * index) / count - Math.PI / 2
     return {
@@ -53,8 +63,8 @@ function graphToSvg(graph, label) {
   )
 
   return `<figure class="graph-card">
-    <figcaption>${label}</figcaption>
-    <svg viewBox="0 0 160 160" role="img" aria-label="${label}">
+    <figcaption>${safeLabel}</figcaption>
+    <svg viewBox="0 0 160 160" role="img" aria-label="${safeLabel}">
       ${edges.join('')}
       ${nodes.join('')}
     </svg>
@@ -164,13 +174,19 @@ function leaderboardHtml() {
   const items = state.leaderboard
     .map(
       (entry, index) =>
-        `<li><span>#${index + 1} ${entry.display_name ?? 'player'}</span><strong>${entry.score}</strong></li>`,
+        `<li><span>#${index + 1} ${escapeHtml(entry.display_name ?? 'player')}</span><strong>${entry.score}</strong></li>`,
     )
     .join('')
   return `<ol class="leaderboard">${items}</ol>`
 }
 
 function render() {
+  const safeStatus = escapeHtml(state.statusMessage)
+  const safeLastAnswer = escapeHtml(state.lastAnswerSummary)
+  const safeEmail = escapeHtml(state.email)
+  const safePassword = escapeHtml(state.password)
+  const safeUserEmail = escapeHtml(state.session?.user.email ?? 'player')
+
   app.innerHTML = `
     <main>
       <h1>Graph Isomorphism Challenge</h1>
@@ -181,11 +197,11 @@ function render() {
               <h2>Account</h2>
               ${
                 state.session
-                  ? `<p>Signed in as <strong>${state.session.user.email ?? 'player'}</strong></p>
+                  ? `<p>Signed in as <strong>${safeUserEmail}</strong></p>
                      <button id="logout" type="button">Log out</button>`
                   : `<form id="auth-form">
-                      <label>Email <input id="email" type="email" required value="${state.email}" /></label>
-                      <label>Password <input id="password" type="password" minlength="6" required value="${state.password}" /></label>
+                      <label>Email <input id="email" type="email" required value="${safeEmail}" /></label>
+                      <label>Password <input id="password" type="password" minlength="6" required value="${safePassword}" /></label>
                       <div class="actions">
                         <button id="signup" type="submit" data-mode="signup">Sign up</button>
                         <button id="login" type="submit" data-mode="login">Log in</button>
@@ -211,13 +227,13 @@ function render() {
                 <button id="not-isomorphic" type="button">Not isomorphic</button>
               </div>`
         }
-        <p class="result">${state.lastAnswerSummary}</p>
+        <p class="result">${safeLastAnswer}</p>
       </section>
       <section class="panel">
         <h2>Top 10 leaderboard</h2>
         ${leaderboardHtml()}
       </section>
-      <p class="status">${state.statusMessage}</p>
+      <p class="status">${safeStatus}</p>
     </main>
   `
 
