@@ -12,15 +12,21 @@ const state = {
   authMode: null,
   authPending: false,
   statusMessage: '',
-  currentRound: createRound(),
-  roundStartedAt: Date.now(),
+  currentRound: null,
+  roundStartedAt: 0,
   roundNumber: 1,
   totalScore: 0,
+  gamePhase: 'ready',
+  countdown: 3,
   gameFinished: false,
   lastAnswerSummary: '',
+  answerFeedback: '',
   leaderboard: [],
   session: null,
 }
+
+let countdownTimer = null
+let feedbackTimer = null
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
@@ -127,38 +133,87 @@ async function saveScore() {
   await loadLeaderboard()
 }
 
-function startGame() {
+function clearGameTimers() {
+  window.clearInterval(countdownTimer)
+  window.clearTimeout(feedbackTimer)
+  countdownTimer = null
+  feedbackTimer = null
+}
+
+function resetGame() {
+  clearGameTimers()
   state.roundNumber = 1
   state.totalScore = 0
-  state.currentRound = createRound()
-  state.roundStartedAt = Date.now()
+  state.currentRound = null
+  state.roundStartedAt = 0
+  state.gamePhase = 'ready'
+  state.countdown = 3
   state.gameFinished = false
   state.lastAnswerSummary = ''
+  state.answerFeedback = ''
+}
+
+function startGame() {
+  state.currentRound = createRound()
+  state.roundStartedAt = Date.now()
+  state.gamePhase = 'playing'
+  render()
+}
+
+function startCountdown() {
+  clearGameTimers()
+  state.countdown = 3
+  state.gamePhase = 'countdown'
+  state.lastAnswerSummary = ''
+  state.answerFeedback = ''
+  render()
+
+  countdownTimer = window.setInterval(() => {
+    state.countdown -= 1
+    if (state.countdown === 0) {
+      window.clearInterval(countdownTimer)
+      countdownTimer = null
+      startGame()
+      return
+    }
+    render()
+  }, 1000)
 }
 
 function openGame() {
-  startGame()
+  resetGame()
   state.screen = 'game'
   state.statusMessage = ''
   render()
 }
 
 function returnHome() {
+  clearGameTimers()
   state.screen = 'home'
   state.statusMessage = ''
   render()
 }
 
 async function handleAnswer(guessIsomorphic) {
-  if (state.gameFinished) return
+  if (state.gamePhase !== 'playing') return
   const isCorrect = guessIsomorphic === state.currentRound.isIsomorphic
   const elapsedMs = Date.now() - state.roundStartedAt
   const roundPoints = isCorrect ? scoreForElapsedMs(elapsedMs) : 0
   state.totalScore += roundPoints
   state.lastAnswerSummary = isCorrect ? `Correct +${roundPoints}` : 'Incorrect +0'
+  state.answerFeedback = isCorrect ? 'correct' : 'incorrect'
+
+  window.clearTimeout(feedbackTimer)
+  feedbackTimer = window.setTimeout(() => {
+    state.answerFeedback = ''
+    feedbackTimer = null
+    render()
+  }, 450)
 
   if (state.roundNumber >= ROUND_COUNT) {
     state.gameFinished = true
+    state.gamePhase = 'finished'
+    render()
     await saveScore()
     render()
     return
@@ -316,7 +371,7 @@ function homeScreenHtml() {
 
 function gameScreenHtml() {
   return `
-    <main class="page shell">
+    <main class="page shell ${state.answerFeedback ? `answer-${state.answerFeedback}` : ''}">
       <header class="site-header">
         <button id="back-home" class="wordmark wordmark-button" type="button">Game Suite</button>
         ${accountActionsHtml()}
@@ -326,17 +381,41 @@ function gameScreenHtml() {
         <h1>Graph Isomorphism</h1>
       </section>
 
-      <section class="panel">
+      <section class="panel game-panel">
         <div class="panel-head">
           <h2>Round ${state.roundNumber}/${ROUND_COUNT}</h2>
-          <div class="score-pill">Score ${state.totalScore}</div>
+          <div class="header-actions">
+            <div class="score-pill">Score ${state.totalScore}</div>
+            ${
+              state.gamePhase === 'countdown' || state.gamePhase === 'playing'
+                ? '<button id="give-up" class="text-button give-up-button" type="button">Give up</button>'
+                : ''
+            }
+          </div>
         </div>
 
         ${
-          state.gameFinished
-            ? `<p class="result">Game over! Final score: ${state.totalScore}</p>
-               <div class="actions">
-                 <button id="restart" type="button">Play again</button>
+          state.gamePhase === 'ready'
+            ? `<div class="game-ready">
+                 <div class="start-area">
+                   <p class="how-to">Determine whether the two graphs are <a href="https://en.wikipedia.org/wiki/Graph_isomorphism" target="_blank" rel="noreferrer">isomorphic</a>.</p>
+                   <button id="start-game" class="primary-button start-button" type="button">Start game</button>
+                 </div>
+               </div>`
+            : state.gamePhase === 'countdown'
+              ? `<div class="countdown" role="timer" aria-live="assertive" aria-label="Game starts in ${state.countdown}">
+                   <span>${state.countdown}</span>
+                 </div>`
+              : state.gameFinished
+            ? `<div class="game-over">
+                 <p class="final-score">Game over! Final score: ${state.totalScore}</p>
+                 <div class="leaderboard-heading">
+                   <h2>Leaderboard</h2>
+                 </div>
+                 ${leaderboardHtml()}
+                 <div class="actions">
+                   <button id="restart" type="button">Play again</button>
+                 </div>
                </div>`
             : `<div class="graphs">
                 ${graphToSvg(state.currentRound.left, 'Graph A')}
@@ -352,14 +431,7 @@ function gameScreenHtml() {
               </div>`
         }
 
-        <p class="result">${escapeHtml(state.lastAnswerSummary)}</p>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Leaderboard</h2>
-        </div>
-        ${leaderboardHtml()}
+        ${state.gameFinished ? '' : `<p class="result">${escapeHtml(state.lastAnswerSummary)}</p>`}
       </section>
 
       <p class="status" role="status">${escapeHtml(state.statusMessage)}</p>
@@ -401,8 +473,13 @@ function render() {
   authDialog?.showModal()
 
   document.querySelector('#logout')?.addEventListener('click', handleLogout)
+  document.querySelector('#start-game')?.addEventListener('click', startCountdown)
+  document.querySelector('#give-up')?.addEventListener('click', () => {
+    resetGame()
+    render()
+  })
   document.querySelector('#restart')?.addEventListener('click', () => {
-    startGame()
+    resetGame()
     render()
   })
   document.querySelector('#isomorphic')?.addEventListener('click', () => handleAnswer(true))
@@ -411,7 +488,13 @@ function render() {
 
 function handleGameShortcut(event) {
   const isTyping = event.target.closest?.('input, textarea, select, [contenteditable="true"]')
-  if (state.screen !== 'game' || state.gameFinished || state.authMode || event.repeat || isTyping) {
+  if (
+    state.screen !== 'game' ||
+    state.gamePhase !== 'playing' ||
+    state.authMode ||
+    event.repeat ||
+    isTyping
+  ) {
     return
   }
 
